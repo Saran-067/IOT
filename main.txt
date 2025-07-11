@@ -1,0 +1,151 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <ThingSpeak.h>
+
+// WiFi Credentials
+const char* ssid = "Saran7";
+const char* password = "12341234";
+
+// ThingSpeak Configuration
+unsigned long channelID = 2895880;
+const char* writeAPIKey = "CKJ8L166W7OTGABA";
+
+// Pin Definitions
+const int irSensor1 = 34;
+const int irSensor2 = 35;
+const int ldrPin = 32;
+const int led1 = 25;
+const int led2 = 26;
+
+// Vehicle Counters
+volatile int vehicleCount1 = 0;
+volatile int vehicleCount2 = 0;
+
+// Timing Variables
+unsigned long lastThingSpeakUpdate = 0;
+unsigned long lastDebounce1 = 0;
+unsigned long lastDebounce2 = 0;
+const unsigned long tsInterval = 20000;  // 20 sec (ThingSpeak free limit: 15 sec min)
+const unsigned long debounceDelay = 300; // 300ms debounce time
+
+// Sensor States
+bool lastState1 = HIGH;
+bool currentState1 = HIGH;
+bool lastState2 = HIGH;
+bool currentState2 = HIGH;
+
+WiFiClient client;
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(irSensor1, INPUT);
+  pinMode(irSensor2, INPUT);
+  pinMode(ldrPin, INPUT);
+
+  // LED PWM Configuration
+  ledcSetup(0, 5000, 8);
+  ledcAttachPin(led1, 0);
+  ledcSetup(1, 5000, 8);
+  ledcAttachPin(led2, 1);
+
+  // WiFi Connection
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected ✅");
+  ThingSpeak.begin(client);
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  int ldrValue = analogRead(ldrPin);
+  bool isDaytime = (ldrValue > 2000);
+  
+  // Read sensors with debounce
+  bool sensor1 = digitalRead(irSensor1);
+  bool sensor2 = digitalRead(irSensor2);
+
+  // Sensor 1 Processing
+  if (sensor1 != lastState1) {
+    lastDebounce1 = currentMillis;
+  }
+  if ((currentMillis - lastDebounce1) > debounceDelay) {
+    if (sensor1 != currentState1) {
+      currentState1 = sensor1;
+      if (!currentState1 && !isDaytime) {  
+        vehicleCount1++;
+        Serial.println("IR1: Vehicle detected + LED activated");
+      }
+      else if (!currentState1 && isDaytime) {  
+        vehicleCount1++;
+        Serial.println("IR1: Vehicle counted (daytime)");
+      }
+    }
+  }
+  lastState1 = sensor1;
+
+  // Sensor 2 Processing
+  if (sensor2 != lastState2) {
+    lastDebounce2 = currentMillis;
+  }
+  if ((currentMillis - lastDebounce2) > debounceDelay) {
+    if (sensor2 != currentState2) {
+      currentState2 = sensor2;
+      if (!currentState2 && !isDaytime) {  
+        vehicleCount2++;
+        Serial.println("IR2: Vehicle detected + LED activated");
+      }
+      else if (!currentState2 && isDaytime) {  
+        vehicleCount2++;
+        Serial.println("IR2: Vehicle counted (daytime)");
+      }
+    }
+  }
+  lastState2 = sensor2;
+
+  // LED Control
+  if (isDaytime) {
+    ledcWrite(0, 0);
+    ledcWrite(1, 0);
+  } else {
+    int brightness1 = (currentState1 == LOW) ? 255 : 50;
+    int brightness2 = (currentState2 == LOW) ? 255 : 50;
+    ledcWrite(0, brightness1);
+    ledcWrite(1, brightness2);
+  }
+
+  // Determine LED states for ThingSpeak
+  int ledState1 = (ledcRead(0) > 0) ? 1 : 0;
+  int ledState2 = (ledcRead(1) > 0) ? 1 : 0;
+
+  // Debug Messages
+  Serial.print("LDR: ");
+  Serial.println(ldrValue);
+  Serial.print("LED1 State: ");
+  Serial.println(ledState1);
+  Serial.print("LED2 State: ");
+  Serial.println(ledState2);
+
+  // Update ThingSpeak every 20 seconds
+  if (currentMillis - lastThingSpeakUpdate > tsInterval) {
+    ThingSpeak.setField(1, ldrValue);
+    ThingSpeak.setField(2, vehicleCount1);
+    ThingSpeak.setField(3, vehicleCount2);
+    ThingSpeak.setField(4, ledState1);  // Store LED1 state
+    ThingSpeak.setField(5, ledState2);  // Store LED2 state
+
+    int status = ThingSpeak.writeFields(channelID, writeAPIKey);
+    if (status == 200) {
+      Serial.println("✅ ThingSpeak update successful!");
+    } else {
+      Serial.print("❌ ThingSpeak error: ");
+      Serial.println(status);
+    }
+    lastThingSpeakUpdate = currentMillis;
+  }
+
+  delay(50); // ✅ Correct delay for smooth operation
+}
